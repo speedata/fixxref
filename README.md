@@ -1,6 +1,6 @@
 # Fix PDF Xref table
 
-This little program fixes an XRef (cross reference) table in PDF files. Warning: this is for educational purpose only and won't work on real world PDF files.
+This little program fixes an XRef (cross reference) table in PDF files and updates `/Length` fields for streams. Warning: this is for educational purpose only and won't work on real world PDF files.
 
 ## Rationale
 
@@ -51,6 +51,11 @@ So to help with the hard part, fixxref looks through the file, counts the bytes 
 * It works only with uncompressed PDF files
 * It uses regular expressions, it does not understand what is in the PDF
 * No support for xref streams
+
+## Installation
+
+    go install github.com/speedata/fixxref@latest
+
 
 ## Usage
 

@@ -22,7 +22,7 @@ endobj
 >>
 endobj
 `
-	p, err := scanInternal(str)
+	p, err := scanBody(str)
 	if err != nil {
 		t.Errorf("scanInternal got error, expect none: %s", err.Error())
 	}
@@ -30,9 +30,5 @@ endobj
 		if got := p.objectPositions[onum(i)]; got != expected {
 			t.Errorf("p.objectPositions[%d] = %d, want %d", i, got, expected)
 		}
-	}
-	expected := 123
-	if got := p.xrefpos; got != expected {
-		t.Errorf("p.xrefpos = %d, want %d", got, expected)
 	}
 }

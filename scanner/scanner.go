@@ -1,8 +1,6 @@
 package scanner
 
 import (
-	"bufio"
-	"crypto/md5"
 	"fmt"
 	"io"
 	"regexp"
@@ -11,68 +9,65 @@ import (
 )
 
 var (
-	startObj = regexp.MustCompile(`^(\d+) 0 obj$`)
+	startObj = regexp.MustCompile(`(?ms)^(\d+) 0 obj.*?$.*?endobj.*?$`)
+	isRoot   = regexp.MustCompile(`/Type\s*/Catalog\W`)
+	streamRe = regexp.MustCompile(`(?ms)stream\n(.*?)^endstream`)
+	lengthRe = regexp.MustCompile(`/Length\s*?(\d+)`)
 )
 
 type onum int
 
 type pdf struct {
-	xrefpos         int
 	objectPositions map[onum]int
 	infoObject      onum
 	rootObject      onum
 	maxOnum         onum
-	body            string
+	body            strings.Builder
 }
 
-func scanInternal(str string) (*pdf, error) {
-	sr := strings.NewReader(str)
-	sc := bufio.NewScanner(sr)
+// ~~> beforeObject "%PDF-1.6\n%···\n\n1 0 obj\n<<\n    /Type /Catalog\n "
+func scanBody(str string) (*pdf, error) {
 	p := &pdf{
 		objectPositions: make(map[onum]int),
 	}
-
-	var ret strings.Builder
-	pos := 0
-	var nextObjIsInfo, nextObjIsRoot bool
-
-	sc.Split(bufio.ScanLines)
-
 	p.objectPositions[0] = 0
-	for sc.Scan() {
-		line := sc.Text()
-		if res := startObj.FindAllStringSubmatch(line, -1); len(res) > 0 {
-			objnum, err := strconv.Atoi(res[0][1])
-			if err != nil {
-				return p, err
-			}
-			if nextObjIsInfo {
-				p.infoObject = onum(objnum)
-				nextObjIsInfo = false
-			} else if nextObjIsRoot {
-				p.rootObject = onum(objnum)
-				nextObjIsRoot = false
-			}
-			p.objectPositions[onum(objnum)] = pos
-			p.maxOnum = onum(objnum) + 1
-			fmt.Fprintln(&ret, line)
-		} else if strings.HasPrefix(line, "xref") {
-			// found startxref, remove everything from here
-			p.xrefpos = pos
+	pos := 0
+	for {
+		idx := startObj.FindStringSubmatchIndex(str)
+		if len(idx) == 0 {
 			break
-		} else if strings.HasPrefix(line, "%% Info") {
-			nextObjIsInfo = true
-			fmt.Fprintln(&ret, line)
-		} else if strings.HasPrefix(line, "%% Root") {
-			nextObjIsRoot = true
-			fmt.Fprintln(&ret, line)
-		} else {
-			fmt.Fprintln(&ret, line)
 		}
-		pos += len(line) + 1
+		beforeObject := str[0:idx[0]]
+		p.body.WriteString(beforeObject)
+		on, err := strconv.Atoi(str[idx[2]:idx[3]])
+		if err != nil {
+			return nil, err
+		}
+		objectNumber := onum(on)
+		p.objectPositions[objectNumber] = pos + idx[0]
+		pos += idx[1]
+
+		objString := str[idx[0]:idx[1]]
+
+		// root object if it contains /Type /Catalog
+		if isRoot.MatchString(objString) {
+			p.rootObject = objectNumber
+		}
+
+		// a stream? Then update the /Length
+		streamSubmatch := streamRe.FindStringSubmatch(objString)
+		if len(streamSubmatch) > 0 {
+			streamLength := len(streamSubmatch[1])
+			objString = lengthRe.ReplaceAllString(objString, fmt.Sprintf("/Length %d", streamLength))
+		}
+
+		p.body.WriteString(objString)
+		if p.maxOnum < objectNumber {
+			p.maxOnum = objectNumber
+		}
+
+		str = str[idx[1]:]
 	}
-	p.xrefpos = pos
-	p.body = ret.String()
 	return p, nil
 }
 
@@ -88,7 +83,7 @@ func Scan(r io.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p, err := scanInternal(string(data))
+	p, err := scanBody(string(data))
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +94,7 @@ func Scan(r io.Reader) (string, error) {
 	}
 	objectChunks := []chunk{}
 	var curchunk *chunk
-	for i := onum(0); i <= p.maxOnum; i++ {
+	for i := onum(0); i <= p.maxOnum+1; i++ {
 		if loc, ok := p.objectPositions[i]; ok {
 			if curchunk == nil {
 				curchunk = &chunk{
@@ -116,38 +111,28 @@ func Scan(r io.Reader) (string, error) {
 			}
 		}
 	}
-
-	var str strings.Builder
-	str.WriteString(p.body)
-	str.WriteString("xref\n")
+	p.body.WriteString("\n")
+	xrefpos := p.body.Len()
+	p.body.WriteString("xref\n")
 
 	for _, chunk := range objectChunks {
 		startOnum := chunk.startOnum
-		fmt.Fprintf(&str, "%d %d\n", chunk.startOnum, len(chunk.positions))
+		fmt.Fprintf(&p.body, "%d %d\n", chunk.startOnum, len(chunk.positions))
 		for i, pos := range chunk.positions {
 			if int(startOnum)+i == 0 {
-				fmt.Fprintf(&str, "%010d 65535 f \n", pos)
+				fmt.Fprintf(&p.body, "%010d 65535 f \n", pos)
 			} else {
-				fmt.Fprintf(&str, "%010d 00000 n \n", pos)
+				fmt.Fprintf(&p.body, "%010d 00000 n \n", pos)
 			}
 		}
 	}
 
-	sum := fmt.Sprintf("%X", md5.Sum([]byte(str.String())))
-
-	trailer := map[string]string{
-		"/Size": fmt.Sprint(p.maxOnum),
-		"/Root": fmt.Sprintf("%d 0 R", p.rootObject),
-		"/ID":   fmt.Sprintf("[<%s> <%s>]", sum, sum),
-	}
+	fmt.Fprintln(&p.body, "trailer <<")
+	fmt.Fprintln(&p.body, "    /Size", p.maxOnum+1)
+	fmt.Fprintln(&p.body, "    /Root", fmt.Sprintf("%d 0 R", p.rootObject))
 	if p.infoObject != 0 {
-		trailer["/Info"] = fmt.Sprintf("%d 0 R", p.infoObject)
+		fmt.Fprintln(&p.body, "    /Info", fmt.Sprintf("%d 0 R", p.infoObject))
 	}
-	fmt.Fprintln(&str, "trailer <<")
-	for k, v := range trailer {
-		fmt.Fprintln(&str, k, v)
-	}
-	fmt.Fprintf(&str, ">>\nstartxref\n%d\n%%%%EOF\n", p.xrefpos)
-
-	return str.String(), nil
+	fmt.Fprintf(&p.body, ">>\nstartxref\n%d\n%%%%EOF\n", xrefpos)
+	return p.body.String(), nil
 }
