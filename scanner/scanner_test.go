@@ -6,7 +6,6 @@ import (
 
 func TestSimple(t *testing.T) {
 	str := `
-%% Root
 1 0 obj
 <<
 	/Type /Catalog
@@ -26,9 +25,13 @@ endobj
 	if err != nil {
 		t.Errorf("scanInternal got error, expect none: %s", err.Error())
 	}
-	for i, expected := range []int{0, 9, 61} {
+	for i, expected := range []int{0, 1, 53} {
 		if got := p.objectPositions[onum(i)]; got != expected {
 			t.Errorf("p.objectPositions[%d] = %d, want %d", i, got, expected)
 		}
+	}
+	expected := 1
+	if got := p.rootObject; got != onum(expected) {
+		t.Errorf("p.rootObject = %d, want %d", got, expected)
 	}
 }

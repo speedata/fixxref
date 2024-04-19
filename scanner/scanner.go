@@ -11,6 +11,7 @@ import (
 var (
 	startObj = regexp.MustCompile(`(?ms)^(\d+) 0 obj.*?$.*?endobj.*?$`)
 	isRoot   = regexp.MustCompile(`/Type\s*/Catalog\W`)
+	isInfo   = regexp.MustCompile(`/(Author|Subject)\W`)
 	streamRe = regexp.MustCompile(`(?ms)stream\n(.*?)^endstream`)
 	lengthRe = regexp.MustCompile(`/Length\s*?(\d+)`)
 )
@@ -25,7 +26,7 @@ type pdf struct {
 	body            strings.Builder
 }
 
-// ~~> beforeObject "%PDF-1.6\n%···\n\n1 0 obj\n<<\n    /Type /Catalog\n "
+// scanBody reads the string str which is a complete PDF file and analyzes it.
 func scanBody(str string) (*pdf, error) {
 	p := &pdf{
 		objectPositions: make(map[onum]int),
@@ -53,6 +54,10 @@ func scanBody(str string) (*pdf, error) {
 		if isRoot.MatchString(objString) {
 			p.rootObject = objectNumber
 		}
+		// info object if it contains /Type /Info
+		if isInfo.MatchString(objString) {
+			p.infoObject = objectNumber
+		}
 
 		// a stream? Then update the /Length
 		streamSubmatch := streamRe.FindStringSubmatch(objString)
@@ -71,13 +76,12 @@ func scanBody(str string) (*pdf, error) {
 	return p, nil
 }
 
-// Scan reads the lines until the xref is found or until the end, whichever comes first. Objects with a comment
-//
-//	%% Info or %% Root
-//
-// right before the object number will be treated as info or root objects in the trailer.
-//
-// The return string is a complete PDF file which replaces the input.
+// Scan reads a PDF file and looks (via regular expressions) for the start and
+// end positions of objects and stores the start start position of each object.
+// Additionally it tries to find out which object the root object (/Type
+// /Catalog) and the Info dict is (/Author (...)). It also tries to adjust the
+// /Length values for stream objects.
+// A new xref table (and the trailer) is written right after the last object.
 func Scan(r io.Reader) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
